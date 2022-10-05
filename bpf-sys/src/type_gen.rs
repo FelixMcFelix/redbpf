@@ -20,8 +20,8 @@ system.
 
 use super::libbpf_bindings;
 use libbpf_sys::{
-    btf, btf__free, btf__get_nr_types, btf__name_by_offset, btf__parse_elf, btf__parse_raw,
-    btf__type_by_id, btf_dump, btf_dump__dump_type, btf_dump__free, libbpf_find_kernel_btf,
+    btf, btf__free, btf__name_by_offset, btf__parse_elf, btf__parse_raw, btf__type_by_id,
+    btf__type_cnt, btf_dump, btf_dump__dump_type, btf_dump__free, libbpf_find_kernel_btf,
 };
 use libc::{c_char, c_void};
 use regex::RegexSet;
@@ -204,7 +204,7 @@ impl VmlinuxBtfDump {
                 return Err(TypeGenError::DumpError);
             }
             let dumpptr = BtfDumpWrapper(dumpptr as _);
-            for type_id in 1..=btf__get_nr_types(self.btfptr) {
+            for type_id in 1..=btf__type_cnt(self.btfptr) {
                 let btftypeptr = btf__type_by_id(self.btfptr, type_id);
                 let nameptr = btf__name_by_offset(self.btfptr, (*btftypeptr).name_off);
                 if nameptr.is_null() {

@@ -58,8 +58,8 @@ pub mod xdp;
 pub use bpf_sys::uname;
 use goblin::elf::{reloc::RelocSection, section_header as hdr, Elf, SectionHeader, Sym};
 use libbpf_sys::{
-    bpf_create_map_attr, bpf_create_map_xattr, bpf_insn, bpf_iter_create, bpf_link_create,
-    bpf_load_program_xattr, bpf_map_def, bpf_map_info, bpf_prog_type, BPF_ANY, BPF_MAP_TYPE_ARRAY,
+    bpf_insn, bpf_iter_create, bpf_link_create,
+    bpf_map_create, bpf_map_info, bpf_prog_load, bpf_prog_type, BPF_ANY, BPF_MAP_TYPE_ARRAY,
     BPF_MAP_TYPE_ARRAY_OF_MAPS, BPF_MAP_TYPE_BLOOM_FILTER, BPF_MAP_TYPE_CGROUP_ARRAY,
     BPF_MAP_TYPE_CGROUP_STORAGE, BPF_MAP_TYPE_CPUMAP, BPF_MAP_TYPE_DEVMAP,
     BPF_MAP_TYPE_DEVMAP_HASH, BPF_MAP_TYPE_HASH, BPF_MAP_TYPE_HASH_OF_MAPS,
@@ -317,7 +317,8 @@ pub struct Map {
     pub name: String,
     pub kind: u32,
     fd: RawFd,
-    config: bpf_map_def,
+    // config: bpf_map_def,
+    config: bpf_map_info,
     section_data: bool,
     pin_file: Option<Box<Path>>,
 }
@@ -338,7 +339,8 @@ impl Clone for Map {
 enum MapBuilder<'a> {
     Normal {
         name: String,
-        def: bpf_map_def,
+        // def: bpf_map_def,
+        def: bpf_map_info,
         btf_type_id: Option<MapBtfTypeId>,
     },
     SectionData {
@@ -642,34 +644,37 @@ impl Program {
         let cname = CString::new(self.name().clone())?;
         let clicense = CString::new(license)?;
 
-        let mut attr = unsafe { mem::zeroed::<libbpf_sys::bpf_load_program_attr>() };
+        let mut opts = unsafe { mem::zeroed::<libbpf_sys::bpf_prog_load_opts>() };
 
-        attr.prog_type = self.to_prog_type();
-        attr.name = cname.as_ptr();
-        attr.insns = self.data().code.as_ptr();
-        attr.insns_cnt = self.data().code.len() as u64;
-        attr.license = clicense.as_ptr();
-        attr.log_level = 0;
+        opts.log_level = 0;
 
         match self {
             Program::TaskIter(bpf_iter) => {
-                attr.expected_attach_type = BPF_TRACE_ITER;
-                attr.__bindgen_anon_2.attach_btf_id = bpf_iter.attach_btf_id;
+                opts.expected_attach_type = BPF_TRACE_ITER;
+                opts.attach_btf_id = bpf_iter.attach_btf_id;
             }
             Program::SkLookup(_) => {
-                attr.expected_attach_type = BPF_SK_LOOKUP;
-                attr.__bindgen_anon_1.kern_version = kernel_version;
+                opts.expected_attach_type = BPF_SK_LOOKUP;
+                opts.kern_version = kernel_version;
             }
             _ => {
-                attr.expected_attach_type = 0;
-                attr.__bindgen_anon_1.kern_version = kernel_version;
+                opts.expected_attach_type = 0;
+                opts.kern_version = kernel_version;
             }
         }
 
         // do not pass log buffer. it is filled with verifier's log but
         // insufficient buffer size can cause ENOSPC error. pass log buffer
         // only after bpf_load_program_xattr fails
-        let fd = unsafe { bpf_load_program_xattr(&attr, ptr::null_mut(), 0) };
+        // let fd = unsafe { bpf_load_program_xattr(&attr, ptr::null_mut(), 0) };
+        let fd = unsafe { bpf_prog_load(
+            self.to_prog_type(),
+            cname.as_ptr(),
+            clicense.as_ptr(),
+            self.data().code.as_ptr(),
+            self.data().code.len() as u64,
+            &opts,
+        ) };
         if fd >= 0 {
             self.data_mut().fd = Some(fd);
             return Ok(());
@@ -688,7 +693,14 @@ impl Program {
                     (*p).rlim_cur = (*p).rlim_max;
                     let rlim = uninit.assume_init();
                     if libc::setrlimit(libc::RLIMIT_MEMLOCK, &rlim) == 0 {
-                        let fd = bpf_load_program_xattr(&attr, ptr::null_mut(), 0);
+                        let fd = bpf_prog_load(
+                            self.to_prog_type(),
+                            cname.as_ptr(),
+                            clicense.as_ptr(),
+                            self.data().code.as_ptr(),
+                            self.data().code.len() as u64,
+                            &opts,
+                        );
                         if fd >= 0 {
                             self.data_mut().fd = Some(fd);
                             return Ok(());
@@ -699,15 +711,23 @@ impl Program {
         }
 
         // unknown error. print log from bpf verifier and give up loading BPF program
-        attr.log_level = 1;
+        opts.log_level = 1;
         let mut printed = false;
         let mut vec_len = 64 * 1024;
         while !printed {
             let mut buf_vec = vec![0; vec_len];
             let log_buffer: MutDataPtr = buf_vec.as_mut_ptr();
             let buf_size = buf_vec.capacity() * mem::size_of_val(unsafe { &*log_buffer });
-            let fd =
-                unsafe { libbpf_sys::bpf_load_program_xattr(&attr, log_buffer, buf_size as u64) };
+            let fd = unsafe {
+                bpf_prog_load(
+                    self.to_prog_type(),
+                    cname.as_ptr(),
+                    clicense.as_ptr(),
+                    self.data().code.as_ptr(),
+                    self.data().code.len() as u64,
+                    &opts,
+                )
+            };
             if fd >= 0 {
                 warn!(
                     "bpf_load_program_xattr had failed but it unexpectedly succeeded while reproducing the error"
@@ -1195,9 +1215,16 @@ fn if_nametoindex(dev_name: &str) -> Result<u32> {
 }
 
 unsafe fn attach_xdp(ifindex: u32, progfd: libc::c_int, flags: libc::c_uint) -> Result<()> {
-    if libbpf_sys::bpf_set_link_xdp_fd(ifindex as i32, progfd, flags) != 0 {
+    // if libbpf_sys::bpf_set_link_xdp_fd(ifindex as i32, progfd, flags) != 0 {
+    //     return Err(Error::IO(io::Error::last_os_error()));
+    // }
+
+    let opts: libbpf_sys::bpf_xdp_attach_opts = std::mem::zeroed();
+
+    if libbpf_sys::bpf_xdp_attach(ifindex as i32, progfd, flags, &opts) != 0 {
         return Err(Error::IO(io::Error::last_os_error()));
     }
+
     Ok(())
 }
 
@@ -1826,20 +1853,22 @@ impl RelocationInfo {
 
 impl Map {
     pub fn load(name: &str, code: &[u8]) -> Result<Map> {
-        let config: bpf_map_def = *unsafe { zero::read_unsafe(code) };
+        // let config: bpf_map_def = *unsafe { zero::read_unsafe(code) };
+        let config: bpf_map_info = *unsafe { zero::read_unsafe(code) };
         Map::with_map_def(name, config, None)
     }
 
     fn with_section_data(name: &str, data: &[u8], flags: u32) -> Result<Map> {
         let mut map = Map::with_map_def(
             name,
-            bpf_map_def {
-                type_: libbpf_sys::BPF_MAP_TYPE_ARRAY,
-                key_size: mem::size_of::<u32>() as u32,
-                value_size: data.len() as u32,
-                max_entries: 1,
-                map_flags: flags,
-            },
+            todo!(),
+            // bpf_map_def {
+            //     type_: libbpf_sys::BPF_MAP_TYPE_ARRAY,
+            //     key_size: mem::size_of::<u32>() as u32,
+            //     value_size: data.len() as u32,
+            //     max_entries: 1,
+            //     map_flags: flags,
+            // },
             None,
         )?;
         map.section_data = true;
@@ -1862,10 +1891,12 @@ impl Map {
 
     fn with_map_def(
         name: &str,
-        config: bpf_map_def,
+        // config: bpf_map_def,
+        config: bpf_map_info,
         btf_type_id: Option<MapBtfTypeId>,
     ) -> Result<Map> {
-        let cname = CString::new(name)?;
+        todo!(); 
+        /*let cname = CString::new(name)?;
         let mut attr = unsafe {
             let mut attr_uninit = MaybeUninit::<bpf_create_map_attr>::zeroed();
             let attr_ptr = attr_uninit.as_mut_ptr();
@@ -1886,7 +1917,15 @@ impl Map {
             }
             attr_uninit.assume_init()
         };
-        let mut fd = unsafe { bpf_create_map_xattr(&attr) };
+        // let mut fd = unsafe { bpf_create_map_xattr(&attr) };
+        let mut fd = unsafe { bpf_map_create(
+            config.type_,
+            cname.as_ptr(),
+            config.key_size,
+            config.value_size,
+            config.max_entries,
+            opts,
+        ) };
         // At kernel v5.11, BPF switched from rlimit-based to memcg-based
         // memory accounting. So before that kernel version, memlock rlimit was
         // used for the memory accounting and bpf() syscall returned -EPERM on
@@ -1939,7 +1978,7 @@ impl Map {
                 io::Error::last_os_error()
             );
             Err(Error::Map)
-        }
+        }*/
     }
 
     /// Create `Map` from a file which represents pinned map
@@ -1980,20 +2019,22 @@ impl Map {
                 .to_string_lossy()
                 .into_owned()
         };
-        Ok(Map {
-            name,
-            kind: map_info.type_,
-            fd,
-            config: bpf_map_def {
-                type_: map_info.type_,
-                key_size: map_info.key_size,
-                value_size: map_info.value_size,
-                max_entries: map_info.max_entries,
-                map_flags: map_info.map_flags,
-            },
-            section_data: false,
-            pin_file: Some(Box::from(file)),
-        })
+        // Ok(Map {
+        //     name,
+        //     kind: map_info.type_,
+        //     fd,
+        //     config: bpf_map_def {
+        //         type_: map_info.type_,
+        //         key_size: map_info.key_size,
+        //         value_size: map_info.value_size,
+        //         max_entries: map_info.max_entries,
+        //         map_flags: map_info.map_flags,
+        //     },
+        //     section_data: false,
+        //     pin_file: Some(Box::from(file)),
+        // })
+
+        todo!()
     }
 
     /// Pin map to BPF FS
@@ -2049,12 +2090,14 @@ impl Drop for Map {
 
 impl<'a> MapBuilder<'a> {
     fn parse(name: &str, bytes: &[u8]) -> Result<Self> {
-        let def = unsafe { ptr::read_unaligned(bytes.as_ptr() as *const bpf_map_def) };
-        Ok(MapBuilder::Normal {
-            def,
-            name: name.to_string(),
-            btf_type_id: None,
-        })
+        todo!()
+
+        // let def = unsafe { ptr::read_unaligned(bytes.as_ptr() as *const bpf_map_def) };
+        // Ok(MapBuilder::Normal {
+        //     def,
+        //     name: name.to_string(),
+        //     btf_type_id: None,
+        // })
     }
 
     fn with_section_data(name: &str, bytes: &'a [u8]) -> Result<Self> {

@@ -52,8 +52,8 @@ use syn::parse::{Parse, ParseStream};
 use syn::punctuated::Punctuated;
 use syn::token::Comma;
 use syn::{
-    parse_macro_input, parse_quote, AttributeArgs, Expr, ExprLit, ItemFn,
-    ItemStatic, Lit, Meta, NestedMeta, Result,
+    parse_macro_input, parse_quote, AttributeArgs, Expr, ExprLit, ItemFn, ItemStatic, Lit, Meta,
+    NestedMeta, Result,
 };
 use uuid::Uuid;
 

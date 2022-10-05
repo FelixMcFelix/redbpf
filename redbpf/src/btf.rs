@@ -129,13 +129,17 @@ impl BTF {
         let log_buf_size = v.capacity() * mem::size_of_val(&v[0]);
         let fd;
         unsafe {
-            fd = libbpf_sys::bpf_load_btf(
+            let mut opts: libbpf_sys::bpf_btf_load_opts = std::mem::zeroed();
+
+            opts.log_buf = log_buf as _;
+            opts.log_size = log_buf_size as u32;
+
+            fd = libbpf_sys::bpf_btf_load(
                 raw_bytes.as_ptr() as *const _,
-                raw_bytes.len() as u32,
-                log_buf as _,
-                log_buf_size as u32,
-                false,
+                raw_bytes.len() as libbpf_sys::size_t,
+                &opts
             );
+
             if fd < 0 {
                 let cstr = CStr::from_ptr(log_buf as _);
                 error!("error on bpf_load_btf: {}", cstr.to_str().unwrap());
