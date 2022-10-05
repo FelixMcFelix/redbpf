@@ -20,4 +20,4 @@ pub use crate::registers::*;
 #[cfg(feature = "ringbuf")]
 pub use crate::ringbuf::*;
 pub use cty::*;
-pub use redbpf_macros::{tracepoint, map, printk, program};
+pub use redbpf_macros::{map, printk, program, tracepoint};

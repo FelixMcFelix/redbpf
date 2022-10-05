@@ -1,7 +1,7 @@
+use crate::maps::BpfMap;
 use crate::xdp::{
     bpf_map_def, bpf_map_type_BPF_MAP_TYPE_XSKMAP, prelude::bpf_redirect_map, XdpAction,
 };
-use crate::maps::BpfMap;
 use core::mem;
 use cty::c_void;
 

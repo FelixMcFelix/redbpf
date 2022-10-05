@@ -1,9 +1,9 @@
 use libc;
+use redbpf::load::Loader;
 use std::process;
 use tokio::signal::ctrl_c;
 use tracing::{error, subscriber, Level};
 use tracing_subscriber::FmtSubscriber;
-use redbpf::load::Loader;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
@@ -18,7 +18,8 @@ async fn main() {
 
     let mut loaded = Loader::load(probe_code()).expect("error loading probe");
     for tracepoint in loaded.tracepoints_mut() {
-        tracepoint.attach_trace_point("syscalls", "sys_enter_connect")
+        tracepoint
+            .attach_trace_point("syscalls", "sys_enter_connect")
             .expect(format!("error on attach_trace_point to {}", tracepoint.name()).as_str());
     }
 
@@ -28,7 +29,7 @@ async fn main() {
 
 fn probe_code() -> &'static [u8] {
     include_bytes!(concat!(
-    env!("OUT_DIR"),
-    "/target/bpf/programs/connection_tracer/connection_tracer.elf"
+        env!("OUT_DIR"),
+        "/target/bpf/programs/connection_tracer/connection_tracer.elf"
     ))
 }
